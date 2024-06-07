@@ -22,6 +22,7 @@ const isGnome = () => {
     if (cache.isgnome !== null) {
         return cache.isgnome;
     }
+
     try {
         child_process.execSync("which gnome-terminal");
         cache.isgnome = true;
@@ -36,6 +37,7 @@ const isXterm = () => {
     if (cache.isxterm !== null) {
         return cache.isxterm;
     }
+
     try {
         child_process.execSync("which xterm");
         cache.isxterm = true;
@@ -50,6 +52,7 @@ const isXtermEmulator = () => {
     if (cache.isxtermemulator !== null) {
         return cache.isxtermemulator;
     }
+
     try {
         child_process.execSync("which x-terminal-emulator");
         cache.isxtermemulator = true;
@@ -60,38 +63,39 @@ const isXtermEmulator = () => {
     return cache.isxtermemulator;
 };
 
-const openLinux = (cmd) => {
-    if (isGnome()) {
-        return `gnome-terminal -e 'bash -c "${cmd};exec bash"'`;
-    } else if (isXterm()) {
-        return `xterm -e 'bash -c "${cmd};exec bash"'`;
-    } else if (isXtermEmulator()) {
-        return `x-terminal-emulator -e 'bash -c "${cmd};exec bash"'`;
-    }
-
-    return "";
-};
-
 const open = {
-    mac: (cmd) =>
+    mac: (cmd, title) =>
         [
             `osascript -e 'tell application "Terminal" to activate' -e 'tell application "System Events" to tell process "Terminal" to keystroke "t" using command down' `,
             `-e 'tell application "Terminal" to do script `,
             `"${cmd.replace(/"/g, '\\"')}" `,
             `in selected tab of the front window'`
         ].join(""),
-    linux: openLinux,
-    win: (cmd) => `start cmd.exe /K ${cmd}`
+    linux: (cmd, title) => {
+        if (isGnome()) {
+            return `gnome-terminal ${
+                title ? `--title="${title}"` : ""
+            } -e 'bash -c "${cmd};exec bash"'`;
+        } else if (isXterm()) {
+            return `xterm ${
+                title ? `-T "${title}" -n "${title}"` : ""
+            } -e 'bash -c "${cmd};exec bash"'`;
+        } else if (isXtermEmulator()) {
+            return `x-terminal-emulator -e 'bash -c "${cmd};exec bash"'`;
+        }
+
+        return "";
+    },
+    win: (cmd, title) =>
+        `start cmd.exe /K "${title ? `title ${title} &&` : ""} ${cmd}"`
 };
 
 function getPlatform() {
     switch (os.platform()) {
         case "darwin":
             return "mac";
-            break;
         case "win32":
             return "win";
-            break;
         default:
             return "linux";
     }
@@ -104,8 +108,9 @@ const defaultConfig = {
     onExit: () => {}
 };
 
-export default function openTerminal(
+export function openTerminal(
     cmd,
+    title,
     option = {},
     cbOrConfig = defaultConfig
 ) {
@@ -120,7 +125,7 @@ export default function openTerminal(
     }
 
     child = child_process.exec(
-        open[platform](cmd),
+        open[platform](cmd, title),
         option,
         (error, stdout, stderr) => {
             if (error) {

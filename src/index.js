@@ -1,8 +1,9 @@
 import prompts from "prompts";
-import openTerminal from "./openTerminal.js";
+import { openTerminal } from "./terminal.js";
 import fs from "fs";
 import path from "path";
-import { __dirname, repos } from "./constants.js";
+import { services } from "./config.js";
+import { __dirname } from "./constants.js";
 import { spawn } from "child_process";
 
 const DEF_REPOS_FOLDER = path.join(__dirname, "..");
@@ -20,107 +21,120 @@ function run() {
 
         try {
             const reposFolder = await getReposFolder();
+            console.log();
+
             const missingRepos = await getMissingRepos(reposFolder);
 
             if (missingRepos.length) {
                 console.log("Missing repositories:");
                 missingRepos.forEach((repo) => {
-                    console.log(`- ${repo.title} (${repo.url})`);
+                    console.log(`- ${repo.title} (${repo.repoUrl})`);
                 });
                 console.log();
 
                 const { clone } = await prompts({
-                    type: "confirm",
+                    type: "toggle",
                     name: "clone",
+                    initial: true,
                     message:
-                        "Confirm cloning missing repositories to continue (requires git installed):"
+                        "Confirm cloning missing repositories to continue (requires git installed):",
+                    active: "yes",
+                    inactive: "no"
                 });
 
-                // const { clone } = await prompts({
-                //     type: "toggle",
-                //     name: "clone",
-                //     initial: false,
-                //     message:
-                //         "Confirm cloning missing repositories to continue (requires git installed):",
-                //     active: "yes",
-                //     inactive: "no"
-                // });
-
-                if (!clone) {
-                    throw new Error("Cloning cancelled by user");
+                if (clone === undefined) {
+                    throw new Error("Process cancelled by user");
                 }
 
+                console.log("Please wait...");
                 await cloneRepos(missingRepos, reposFolder);
-                console.log("Repositories cloned successfully");
+                console.log("Repositories cloned successfully!");
                 console.log();
             }
 
-            repos.sort((a, b) => a.order - b.order);
+            console.log("Configuring .env files for repositories...");
+            await Promise.all(
+                services
+                    .filter(({ env }) => env)
+                    .map(async ({ title, env }) => {
+                        const pathEnvFile = path.join(
+                            reposFolder,
+                            title,
+                            ".env"
+                        );
+                        await writeEnvFile(pathEnvFile, env);
+                    })
+            );
+            console.log(".env files configured successfully!");
+            console.log();
 
-            for (let i = 0; i < repos.length; i++) {
-                const repo = repos[i];
-                const { commands } = repo;
+            services.sort((a, b) => a.order - b.order);
+
+            console.log("Define commands for services:");
+
+            for (let i = 0; i < services.length; i++) {
+                const service = services[i];
+                const { commands } = service;
 
                 if (commands.length) {
-                    // if (commands.length > 1) {
-                    repo.command = (
-                        await prompts({
-                            type: "select",
-                            name: "command",
-                            message: `(${i + 1}/${
-                                repos.length
-                            }) Select command to run for ${repo.title}:`,
-                            choices: commands.map((command) => ({
-                                title: command,
-                                value: command
-                            }))
-                        })
-                    ).command;
+                    const { command } = await prompts({
+                        type: "text",
+                        name: "command",
+                        message: `(${i + 1}/${
+                            services.length
+                        }) Confirm command for ${service.title} service`,
+                        initial: commands.join(" && ")
+                    });
+
+                    if (command === undefined) {
+                        throw new Error("Process cancelled by user");
+                    }
+
+                    service.command = command;
                 }
             }
 
             console.log();
 
-            for (let i = 0; i < repos.length; i++) {
-                const repo = repos[i];
-                const { title, command } = repo;
+            console.log("Starting services...");
 
-                await prompts({
-                    type: "text",
+            for (let i = 0; i < services.length; i++) {
+                const service = services[i];
+                const { title, command } = service;
+
+                const { open } = await prompts({
+                    type: "invisible",
                     name: "open",
                     message: `(${i + 1}/${
-                        repos.length
-                    })Press enter to start terminal for ${title}`,
-                    initial: true
+                        services.length
+                    }) Press enter to start ${title} process`
                 });
 
-                repo.childProcess = openTerminal(`echo ${title}`, {
+                if (open === undefined) {
+                    throw new Error("Process cancelled by user");
+                }
+
+                service.childProcess = openTerminal(command, title, {
                     cwd: path.join(reposFolder, title)
                 });
             }
 
             console.log();
-            console.log("Opening terminals for repositories...");
+            console.log("Opening terminals for services...");
         } catch (err) {
+            console.log();
             console.error(err);
         }
 
         setTimeout(async () => {
+            console.log();
+
             await prompts({
-                type: "text",
+                type: "invisible",
                 name: "exit",
-                message: "Press Enter to exit"
+                message:
+                    "Job completed. Press enter to exit... (the other terminals will remain open)"
             });
-
-            repos.forEach(({ childProcess }) => {
-                if (childProcess) {
-                    // console.log("Killing child process");
-                    // childProcess.disconnect();
-                    childProcess.kill();
-                }
-            });
-
-            // process.exit(0);
         }, 2000);
     })();
 }
@@ -129,15 +143,17 @@ async function getReposFolder() {
     let reposFolder;
 
     while (true) {
-        reposFolder =
+        reposFolder = (
             (
                 await prompts({
                     type: "text",
                     name: "value",
-                    message: `Enter path to Paidify repositories reference folder (leave empty for default: ${DEF_REPOS_FOLDER}):`
+                    message: `Enter path to Paidify repositories reference folder (leave empty for default: ${DEF_REPOS_FOLDER})`
                     // initial: DEF_REPOS_FOLDER,
                 })
-            ).value || DEF_REPOS_FOLDER;
+            ).value || DEF_REPOS_FOLDER
+        ).replace(/\\/g, "/");
+        console.log(reposFolder);
 
         try {
             await fs.promises.access(
@@ -146,6 +162,7 @@ async function getReposFolder() {
             );
             break;
         } catch (err) {
+            console.log(err);
             console.log("Invalid path. Please try again.");
         }
     }
@@ -155,32 +172,28 @@ async function getReposFolder() {
 
 async function getMissingRepos(reposFolder) {
     const folders = await fs.promises.readdir(reposFolder);
-    return repos.filter((repo) => !folders.includes(repo.title));
+    return services.filter((repo) => !folders.includes(repo.title));
 }
 
 async function cloneRepos(repos, reposFolder) {
-    // for (const repo of repos) {
-    //     try {
-    //         await cloneRepo(repo, reposFolder);
-    //     } catch (err) {
-    //         console.error(err);
-    //     }
-    // }
     await Promise.all(repos.map((repo) => cloneRepo(repo, reposFolder)));
 }
 
 function cloneRepo(repo, reposFolder) {
     return new Promise((res, rej) => {
-        const { url, title } = repo;
-        const cloneProcess = spawn(`cd ${reposFolder} && git clone ${url}`, {
-            shell: true
-        });
+        const { repoUrl, title } = repo;
+        const cloneProcess = spawn(
+            `cd ${reposFolder} && git clone ${repoUrl} ${title}`,
+            { shell: true }
+        );
 
         // main process events
 
         cloneProcess.on("exit", () => {
             rej(
-                new Error(`Error when cloning repository ${title} from ${url}`)
+                new Error(
+                    `Error when cloning repository ${title} from ${repoUrl}`
+                )
             );
         });
 
@@ -193,21 +206,26 @@ function cloneRepo(repo, reposFolder) {
         cloneProcess.stdout.on("end", () => {
             if (!fs.existsSync(path.join(reposFolder, title))) {
                 return rej(
-                    new Error(`Failed to clone repository ${title} from ${url}`)
+                    new Error(
+                        `Failed to clone repository ${title} from ${repoUrl}`
+                    )
                 );
             }
             res();
         });
 
-        // stderr events
-
-        // cloneProcess.stderr.on("data", (data) => {
-        //   console.log(`stderr data: ${data}`);
-        // });
-
         cloneProcess.stderr.on("error", (err) => {
-            // console.log(`stderr err: ${err}`);
             return rej(err);
         });
     });
+}
+
+function writeEnvFile(pathEnvFile, variables) {
+    return fs.promises.writeFile(
+        pathEnvFile,
+        Object.entries(variables)
+            .filter(([_, value]) => value)
+            .map(([key, value]) => `${key}="${value}"`)
+            .join("\n")
+    );
 }
